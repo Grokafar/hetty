@@ -74,6 +74,9 @@ func NewProxy(cfg Config) (*Proxy, error) {
 		IdleConnTimeout:       90 * time.Second,
 		TLSHandshakeTimeout:   10 * time.Second,
 		ExpectContinueTimeout: 1 * time.Second,
+		TLSClientConfig: &tls.Config{
+			InsecureSkipVerify: true,
+		},
 
 		// Non-default transport values.
 		DisableCompression: true,
@@ -91,7 +94,7 @@ func NewProxy(cfg Config) (*Proxy, error) {
 
 func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodConnect {
-		p.handleConnect(w)
+		p.handleConnect(w, r)
 		return
 	}
 
@@ -176,7 +179,7 @@ func RequestIDFromContext(ctx context.Context) (ulid.ULID, bool) {
 // handleConnect hijacks the incoming HTTP request and sets up an HTTP tunnel.
 // During the TLS handshake with the client, we use the proxy's CA config to
 // create a certificate on-the-fly.
-func (p *Proxy) handleConnect(w http.ResponseWriter) {
+func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	hj, ok := w.(http.Hijacker)
 	if !ok {
 		p.logger.Errorw("ResponseWriter is not a http.Hijacker.",
@@ -198,8 +201,13 @@ func (p *Proxy) handleConnect(w http.ResponseWriter) {
 	}
 	defer clientConn.Close()
 
+	host := r.Host
+	if host == "" {
+		host = r.URL.Host
+	}
+
 	// Secure connection to client.
-	tlsConn, err := p.clientTLSConn(clientConn)
+	tlsConn, err := p.clientTLSConn(clientConn, host)
 	if err != nil {
 		p.logger.Errorw("Securing client connection failed.",
 			"error", err,
@@ -220,8 +228,8 @@ func (p *Proxy) handleConnect(w http.ResponseWriter) {
 	<-clientConnNotify.closed
 }
 
-func (p *Proxy) clientTLSConn(conn net.Conn) (*tls.Conn, error) {
-	tlsConfig := p.certConfig.TLSConfig()
+func (p *Proxy) clientTLSConn(conn net.Conn, host string) (*tls.Conn, error) {
+	tlsConfig := p.certConfig.TLSConfig(host)
 
 	tlsConn := tls.Server(conn, tlsConfig)
 	if err := tlsConn.Handshake(); err != nil {
